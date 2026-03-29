@@ -1,59 +1,73 @@
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "@/lib/config";
-import type { BugRecord, IndexEntry } from "@/lib/types";
+import { Redis } from "@upstash/redis";
+import { config } from "./config";
+import type { BugRecord, IndexEntry } from "./types";
 
-// ─── Vercel KV (production) ─────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Upstash Redis client — instantiated once at module level
+// ---------------------------------------------------------------------------
+const redis = new Redis({
+  url: config.upstashUrl,
+  token: config.upstashToken,
+});
 
-/** Save a bug record to Vercel KV and update the sorted index. */
-async function saveBugKv(record: BugRecord): Promise<void> {
-  const { kv } = await import("@vercel/kv");
-  await kv.set(`bug:${record.id}`, JSON.stringify(record));
-  const index = (await kv.get<IndexEntry[]>("bugs:index")) ?? [];
+// ---------------------------------------------------------------------------
+// Production implementation — Upstash Redis
+// ---------------------------------------------------------------------------
+
+export async function saveBugKv(record: BugRecord): Promise<void> {
+  // @upstash/redis auto-serialises objects — do NOT manually JSON.stringify
+  await redis.set(`bug:${record.id}`, record);
+
+  const index: IndexEntry[] = (await redis.get<IndexEntry[]>("bugs:index")) ?? [];
   index.unshift({ id: record.id, createdAt: record.createdAt });
-  await kv.set("bugs:index", JSON.stringify(index));
+  await redis.set("bugs:index", index);
 }
 
-/** Retrieve all bug records from Vercel KV, ordered newest-first. */
-async function getAllBugsKv(): Promise<BugRecord[]> {
-  const { kv } = await import("@vercel/kv");
-  const index = (await kv.get<IndexEntry[]>("bugs:index")) ?? [];
+export async function getAllBugsKv(): Promise<BugRecord[]> {
+  const index: IndexEntry[] = (await redis.get<IndexEntry[]>("bugs:index")) ?? [];
+
   const records = await Promise.all(
-    index.map((entry) => kv.get<BugRecord>(`bug:${entry.id}`)),
+    index.map((entry) => redis.get<BugRecord>(`bug:${entry.id}`)),
   );
+
   return records.filter(Boolean) as BugRecord[];
 }
 
-// ─── Local JSON fallback (development) ──────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Local JSON fallback — used when PERSISTENCE_DRIVER=local
+// ---------------------------------------------------------------------------
+const DATA_FILE = path.resolve(process.cwd(), "data", "bugs.json");
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const DATA_FILE = path.join(DATA_DIR, "bugs.json");
-
-function readLocalBugs(): BugRecord[] {
-  if (!fs.existsSync(DATA_FILE)) return [];
-  const raw = fs.readFileSync(DATA_FILE, "utf-8");
-  return JSON.parse(raw) as BugRecord[];
+function readLocalData(): BugRecord[] {
+  try {
+    const raw = fs.readFileSync(DATA_FILE, "utf-8");
+    return JSON.parse(raw) as BugRecord[];
+  } catch {
+    return [];
+  }
 }
 
-function writeLocalBugs(bugs: BugRecord[]): void {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(DATA_FILE, JSON.stringify(bugs, null, 2), "utf-8");
+function writeLocalData(records: BugRecord[]): void {
+  const dir = path.dirname(DATA_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(DATA_FILE, JSON.stringify(records, null, 2), "utf-8");
 }
 
-/** Save a bug record to the local JSON file. */
-async function saveBugLocal(record: BugRecord): Promise<void> {
-  const bugs = readLocalBugs();
-  bugs.unshift(record);
-  writeLocalBugs(bugs);
+export async function saveBugLocal(record: BugRecord): Promise<void> {
+  const records = readLocalData();
+  records.unshift(record);
+  writeLocalData(records);
 }
 
-/** Retrieve all bug records from the local JSON file, newest-first. */
-async function getAllBugsLocal(): Promise<BugRecord[]> {
-  return readLocalBugs();
+export async function getAllBugsLocal(): Promise<BugRecord[]> {
+  return readLocalData();
 }
 
-// ─── Driver selection ────────────────────────────────────────────────────────
-
+// ---------------------------------------------------------------------------
+// Driver selection — default is "upstash"
+// ---------------------------------------------------------------------------
 export const saveBug =
   config.persistenceDriver === "local" ? saveBugLocal : saveBugKv;
 

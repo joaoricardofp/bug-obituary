@@ -1,26 +1,57 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/* ─── Font CSS variables injected by next/font ────────────────────────────── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-cinzel: var(--font-cinzel);
+  --font-crimson: var(--font-crimson);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ─── Tim Burton Palette ──────────────────────────────────────────────────── */
+:root {
+  /* Background */
+  --bg-void: #0a0a0f;
+
+  /* Surfaces */
+  --surface-card: #1c1824;
+  --surface-card-hover: #241e30;
+
+  /* Text */
+  --text-primary: #e7e5e4;    /* stone-200 */
+  --text-muted: #a8a29e;      /* stone-400 */
+  --text-accent: #a78bfa;     /* purple-400 */
+  --text-amber: #fbbf24;      /* amber-400 — dates, epitaphs */
+
+  /* Borders */
+  --border-subtle: rgba(139, 120, 160, 0.25);
+}
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+html {
+  background: var(--bg-void);
+  color: var(--text-primary);
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg-void);
+  font-family: var(--font-crimson), Georgia, serif;
+  min-height: 100%;
+}
+
+/* ─── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #110f18;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(139, 120, 160, 0.4);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(167, 139, 250, 0.6);
 }

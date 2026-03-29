@@ -1,65 +1,107 @@
-import Image from "next/image";
+import type { Metadata } from "next";
+import Link from "next/link";
+import { getAllBugs } from "@/lib/kv";
+import type { BugRecord } from "@/lib/types";
+import GraveyardSceneLoader from "@/components/GraveyardSceneLoader";
 
-export default function Home() {
+export const metadata: Metadata = {
+  title: "Bug Obituary — The Graveyard",
+  description:
+    "A graveyard for bugs that have been fixed. Every bug deserves a proper burial.",
+};
+
+export default async function Home() {
+  // Server-side fetch — no-store so new bugs appear without a redeploy.
+  const bugs: BugRecord[] = await getAllBugs();
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="relative w-screen h-screen overflow-hidden">
+      {/* Three.js scene fills the viewport */}
+      <GraveyardSceneLoader bugs={bugs} />
+
+      {/* HUD — header overlay */}
+      <header
+        className="absolute top-0 left-0 right-0 z-20 flex items-center justify-between px-6 py-4"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(10,10,15,0.9) 0%, rgba(10,10,15,0) 100%)",
+          pointerEvents: "none",
+        }}
+      >
+        <div
+          className="flex items-center gap-3"
+          style={{ pointerEvents: "auto" }}
+        >
+          <span className="text-2xl">🪦</span>
+          <h1
+            className="text-xl font-bold tracking-wide"
+            style={{
+              fontFamily: "var(--font-cinzel), serif",
+              color: "#e7e5e4",
+              textShadow: "0 2px 12px rgba(0,0,0,0.8)",
+            }}
+          >
+            Bug Obituary
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+        </div>
+
+        <Link
+          id="nav-submit-bug"
+          href="/submit"
+          className="px-4 py-2 rounded-lg text-sm font-semibold transition-all"
+          style={{
+            background: "linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%)",
+            color: "#fff",
+            fontFamily: "var(--font-cinzel), serif",
+            letterSpacing: "0.05em",
+            pointerEvents: "auto",
+            boxShadow: "0 0 20px rgba(167,139,250,0.3)",
+          }}
+        >
+          + Bury a Bug
+        </Link>
+      </header>
+
+      {/* HUD — empty-state hint when no bugs yet */}
+      {bugs.length === 0 && (
+        <div
+          className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center gap-4"
+          style={{ pointerEvents: "none" }}
+        >
+          <p
+            className="text-2xl italic"
+            style={{
+              fontFamily: "var(--font-cinzel), serif",
+              color: "rgba(167,139,250,0.7)",
+              textShadow: "0 2px 20px rgba(0,0,0,0.8)",
+            }}
+          >
+            The graveyard is quiet… for now.
+          </p>
+          <p style={{ color: "rgba(168,162,158,0.6)", fontSize: "14px" }}>
+            Every bug you squash deserves a proper burial.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      )}
+
+      {/* HUD — hover hint */}
+      {bugs.length > 0 && (
+        <div
+          className="absolute bottom-6 left-0 right-0 flex justify-center"
+          style={{ pointerEvents: "none" }}
+        >
+          <p
+            style={{
+              color: "rgba(168,162,158,0.5)",
+              fontSize: "12px",
+              fontFamily: "var(--font-cinzel), serif",
+              letterSpacing: "0.1em",
+            }}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            Hover over a gravestone · Click to read the obituary
+          </p>
         </div>
-      </main>
-    </div>
+      )}
+    </main>
   );
 }

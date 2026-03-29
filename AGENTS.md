@@ -24,11 +24,12 @@ Read it fully before touching any file. Do not rely on assumptions from prior Ne
 7. [Groq Integration](#7-groq-integration)
 8. [Data Persistence](#8-data-persistence)
 9. [Components](#9-components)
-10. [Styling](#10-styling)
-11. [Animations](#11-animations)
-12. [Coding Standards](#12-coding-standards)
-13. [Strict Prohibitions](#13-strict-prohibitions)
-14. [Deploy](#14-deploy)
+10. [Three.js Scene](#10-threejs-scene)
+11. [Styling](#11-styling)
+12. [Animations](#12-animations)
+13. [Coding Standards](#13-coding-standards)
+14. [Strict Prohibitions](#14-strict-prohibitions)
+15. [Deploy](#15-deploy)
 
 ---
 
@@ -51,7 +52,8 @@ cause of death, legacy, and an epitaph — and is displayed on a visual graveyar
 | Styling | Tailwind CSS v3 | Utility-first. No CSS Modules unless scoping requires it. |
 | AI | Groq API — `llama-3.3-70b-versatile` | Free tier. Never switch model without updating this file. |
 | Persistence | Vercel KV (Redis) | Falls back to a local JSON file in development. |
-| Animations | Framer Motion | Gravestone entrance and card flip animations only. |
+| 3D Scene | Three.js (r128) | Full immersive graveyard — gravestones, fog, lighting, hover via raycasting. |
+| UI Animations | Framer Motion | Modal entrance, card flip, and 2D overlay transitions only. |
 | Deploy | Vercel | Single-command deploy via `vercel --prod`. |
 
 ---
@@ -64,7 +66,7 @@ bug-obituary/
 ├── src/
 │   ├── app/
 │   │   ├── layout.tsx                  # Root layout — fonts, metadata, global providers
-│   │   ├── page.tsx                    # / — Graveyard page (grid of gravestones)
+│   │   ├── page.tsx                    # / — Graveyard page (Three.js scene + 2D overlay)
 │   │   ├── submit/
 │   │   │   └── page.tsx                # /submit — Bug submission form
 │   │   └── api/
@@ -72,14 +74,25 @@ bug-obituary/
 │   │           └── route.ts            # POST /api/obituary — Groq call + KV save
 │   │
 │   ├── components/
-│   │   ├── GraveyardGrid.tsx           # Responsive grid, fetches and renders all bugs
-│   │   ├── GravestoneCard.tsx          # Individual gravestone with flip animation
-│   │   ├── ObituaryModal.tsx           # Full obituary displayed in a modal
+│   │   ├── GraveyardScene.tsx          # Three.js canvas — full immersive 3D graveyard
+│   │   ├── GraveyardOverlay.tsx        # Absolute-positioned 2D layer over the canvas
+│   │   ├── GravestoneCard.tsx          # 2D card shown on hover/click (Framer Motion)
+│   │   ├── ObituaryModal.tsx           # Full obituary modal (Framer Motion)
 │   │   └── BugForm.tsx                 # Controlled form for /submit
+│   │
+│   ├── three/
+│   │   ├── scene.ts                    # Scene, camera, renderer, fog initialisation
+│   │   ├── controls.ts                 # Orbit Controls — drag, zoom, pan navigation
+│   │   ├── graveyard.ts                # Creates and positions all gravestone meshes
+│   │   ├── gravestone.ts               # Three gravestone types + weathering details
+│   │   ├── atmosphere.ts               # Moon, stars, dead trees, ground, fence
+│   │   ├── lighting.ts                 # Ambient, moonlight, candle point lights, rim
+│   │   └── raycaster.ts                # Hover detection — maps 3D mesh → BugRecord id
 │   │
 │   └── lib/
 │       ├── groq.ts                     # Groq client initialisation + generateObituary()
 │       ├── kv.ts                       # KV read/write helpers (Vercel KV + local fallback)
+│       ├── config.ts                   # Typed environment variable access
 │       └── types.ts                    # All shared TypeScript types and interfaces
 │
 ├── public/
@@ -143,15 +156,17 @@ This project uses the **Next.js App Router exclusively**. Every rule below is no
 |---|---|
 | All components are **Server Components** by default. | Add `"use client"` only when the component uses hooks, browser APIs, or event handlers. |
 
-- `GraveyardGrid` — Server Component. Fetches all bugs at render time.
+- `GraveyardScene` — Client Component. Mounts the Three.js canvas, requires `useEffect`, `useRef`, and `window`.
+- `GraveyardOverlay` — Client Component. Renders the hovered `GravestoneCard` absolutely over the canvas.
 - `GravestoneCard` — Client Component. Requires Framer Motion and `useState` for flip.
 - `ObituaryModal` — Client Component. Requires `useState` for open/close.
 - `BugForm` — Client Component. Requires controlled inputs and `useRouter`.
 
 ### Data fetching
 
-- Fetch data in Server Components using `async/await` directly. Do not use `useEffect` + `fetch` for initial data loading.
+- `app/page.tsx` is a Server Component that fetches all bugs and passes them as a serialised prop to `GraveyardScene`.
 - Use `cache: "no-store"` on the graveyard fetch so new bugs appear without a redeploy.
+- `GraveyardScene` receives `bugs: BugRecord[]` as a prop — it does not fetch data itself. Three.js runs entirely client-side.
 - Mutations (form submit) must go through the API route, not Server Actions, to keep the AI call isolated.
 
 ### Metadata
@@ -375,27 +390,48 @@ export const getAllBugs = config.persistenceDriver === "local" ? getAllBugsLocal
 
 ## 9. Components
 
-### `GraveyardGrid`
+### `GraveyardScene`
 
-- Server Component.
-- Calls `getAllBugs()` directly (no API call needed — server-side).
-- Renders a responsive CSS grid: 1 column on mobile, 3 on `md`, 4 on `lg`.
-- Passes each `BugRecord` to `GravestoneCard`.
-- If there are no bugs yet, renders an empty-state message: *"The graveyard is quiet... for now."*
+- Client Component (`"use client"`).
+- Mounts a full-viewport `<canvas>` via `useRef`. Initialises the Three.js scene inside a `useEffect` that runs once on mount.
+- Receives `bugs: BugRecord[]` as a prop. Passes the array to `graveyard.ts` to build the meshes.
+- Runs the animation loop with `requestAnimationFrame`. Cancels the loop and disposes all geometries/materials on unmount.
+- On each frame, calls the raycaster to detect which gravestone the cursor is over. On hover change, updates `hoveredId` state and positions the `GraveyardOverlay`.
+- On click, if a gravestone is hovered, sets `selectedBug` state to open `ObituaryModal`.
+- Must be dynamically imported in `app/page.tsx` with `ssr: false` — Three.js requires `window` and cannot run on the server.
+
+```ts
+// app/page.tsx
+import dynamic from "next/dynamic";
+
+const GraveyardScene = dynamic(
+  () => import("@/components/GraveyardScene"),
+  { ssr: false }
+);
+```
+
+### `GraveyardOverlay`
+
+- Client Component.
+- Absolutely positioned `<div>` rendered on top of the canvas (`z-index: 10`).
+- Receives `bug: BugRecord | null` and `screenPosition: { x: number; y: number } | null`.
+- When `bug` is not null, renders a `GravestoneCard` at the given screen position.
+- Pointer events must be `none` on the overlay container itself — only the card receives events.
 
 ### `GravestoneCard`
 
-- Client Component (`"use client"`).
-- Displays the bug name and death date on the front face.
-- On click, flips (CSS 3D transform + Framer Motion) to reveal the epitaph on the back.
-- Clicking the back opens `ObituaryModal`.
-- Props: `bug: BugRecord`.
+- Client Component.
+- A 2D card that appears on gravestone hover showing: bug name and death date on the front, epitaph on the back.
+- On click, triggers `onSelect` callback to open `ObituaryModal`.
+- Flip animation via Framer Motion (Y-axis 3D rotation). See Section 11 for exact values.
+- Props: `bug: BugRecord`, `onSelect: (bug: BugRecord) => void`.
 
 ### `ObituaryModal`
 
 - Client Component.
 - Full-screen overlay with the complete obituary: title, dates, causa mortis, legacy, epitaph.
 - Closes on backdrop click or `Escape` key.
+- Styled in the Tim Burton aesthetic: dark background, Cinzel font, faded parchment card, candlelight glow accents.
 - Props: `bug: BugRecord | null`, `onClose: () => void`.
 
 ### `BugForm`
@@ -409,29 +445,562 @@ export const getAllBugs = config.persistenceDriver === "local" ? getAllBugsLocal
 
 ---
 
-## 10. Styling
+## 10. Three.js Scene
 
-- **Tailwind CSS only**. Do not add a global `.css` file for component-specific styles.
-- The graveyard aesthetic uses dark tones: slate-900 background, stone-300/400 text, and subtle green-900 accents for moss.
-- Gravestone cards use a stone/gray palette with slight texture via Tailwind's `bg-stone-*` scale.
-- Fonts: use `next/font/google` in `app/layout.tsx`. Suggested pairing:
-  - Display: **Cinzel** (serif, gothic, appropriate for a graveyard)
-  - Body: **Inter** (clean, readable)
-- Do not use inline `style` props unless Tailwind cannot express the value (e.g. a specific transform origin for the card flip).
+All Three.js logic lives in `src/three/`. These are plain TypeScript modules — not React components. They are imported and called inside `GraveyardScene`'s `useEffect`.
 
----
+### Visual aesthetic — Tim Burton cartoon macabre
 
-## 11. Animations
+The scene must feel hand-crafted and stylised, not photorealistic. Key principles:
 
-- All animations use **Framer Motion**. Do not use plain CSS `@keyframes` in component files.
-- **Gravestone entrance**: `initial={{ opacity: 0, y: 20 }}` → `animate={{ opacity: 1, y: 0 }}`. Stagger children with `staggerChildren: 0.05` in the parent `variants`.
-- **Card flip**: 3D Y-axis rotation. Front face at `rotateY: 0`, back face at `rotateY: 180`. Use `backfaceVisibility: "hidden"` on both faces.
-- **Modal**: fade in with `initial={{ opacity: 0 }}` → `animate={{ opacity: 1 }}`, duration `0.2s`.
-- Respect `prefers-reduced-motion`: wrap animation props with a check using `useReducedMotion()` from Framer Motion and fall back to a simple opacity transition.
+- **Colour palette**: near-black sky (`#0a0a0f`), desaturated purple-grey ground (`#1a1520`), cold blue-white moonlight, warm amber point lights near certain graves.
+- **Materials**: `MeshToonMaterial` throughout — it produces the characteristic cel-shaded look. No `MeshStandardMaterial` or `MeshPhongMaterial`.
+- **Fog**: `THREE.FogExp2(0x0a0a0f, 0.035)` — exponential fog that thickens in the distance, hiding the scene edges cleanly.
+- **No textures or external assets** — everything is built from primitives. This keeps the bundle small and the deploy simple.
 
 ---
 
-## 12. Coding Standards
+### `scene.ts` — initialisation
+
+```ts
+export function createScene(canvas: HTMLCanvasElement) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0a0f);
+  scene.fog = new THREE.FogExp2(0x0a0a0f, 0.035);
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    100
+  );
+  // Starting position — looking at the graveyard from a slight elevation
+  camera.position.set(0, 4, 12);
+  camera.lookAt(0, 0, 0);
+
+  return { renderer, scene, camera };
+}
+```
+
+---
+
+### `controls.ts` — Orbit Controls (navigation)
+
+Orbit Controls allow the user to drag to rotate, scroll to zoom, and right-click to pan freely around the graveyard.
+
+**Important**: Three.js r128 does not bundle `OrbitControls` in the main package. Import it from the `three/examples/jsm/` path:
+
+```ts
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls";
+
+export function createControls(
+  camera: THREE.PerspectiveCamera,
+  domElement: HTMLElement
+): OrbitControls {
+  const controls = new OrbitControls(camera, domElement);
+
+  // Feel — slow, weighty, like you're really walking through fog
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+  controls.rotateSpeed = 0.5;
+  controls.zoomSpeed = 0.8;
+  controls.panSpeed = 0.6;
+
+  // Zoom limits — don't let the user clip inside a stone or fly to infinity
+  controls.minDistance = 3;
+  controls.maxDistance = 30;
+
+  // Vertical angle limits — keep the ground and sky always visible
+  controls.minPolarAngle = Math.PI * 0.1;  // ~18° — can't look straight up
+  controls.maxPolarAngle = Math.PI * 0.72; // ~130° — can't go below ground
+
+  // Target — orbit around the centre of the graveyard, not the world origin
+  controls.target.set(0, 0.5, 0);
+  controls.update();
+
+  return controls;
+}
+```
+
+**Call `controls.update()` every frame** inside the animation loop — required for damping to work:
+
+```ts
+// animation loop
+function animate() {
+  rafId = requestAnimationFrame(animate);
+  controls.update(); // must be before renderer.render
+  renderer.render(scene, camera);
+}
+```
+
+**Dispose on unmount** to remove all event listeners:
+
+```ts
+return () => {
+  cancelAnimationFrame(rafId);
+  controls.dispose();
+  renderer.dispose();
+  // ... geometry/material disposal below
+};
+```
+
+**`src/three/` must export `createControls`** and the `controls.ts` file must be added to the repository structure. Update the scaffold prompt in Section 13 accordingly.
+
+---
+
+### `gravestone.ts` — gravestone geometry (3 types, randomly assigned)
+
+Each bug is assigned one of three archetypal gravestone shapes. The type is deterministic based on the bug's `id` so it never changes between renders: `type = parseInt(id[0], 16) % 3`.
+
+All types share the same stone `MeshToonMaterial`. Stone base colour: `#3d3a4a`. Per-stone hue jitter: `±0.03` on the HSL hue channel (keeps them feeling like the same stone quarry, not a rainbow).
+
+**Weathering details** are achieved entirely with geometry — no textures:
+
+- **Moss patches**: 3–5 flat `BoxGeometry(rnd, 0.01, rnd)` slabs placed on the stone surface at random positions, `MeshToonMaterial` colour `#2d4a2d` (dark green). They sit flush against the slab face, rotated slightly.
+- **Cracks**: 2–3 very thin, tall `BoxGeometry(0.01, rnd, 0.01)` meshes placed on the slab face at slight angles, same stone material but lightness `+0.05` so they catch light differently.
+- **Name plate**: a thin `BoxGeometry(0.6, 0.25, 0.04)` raised `0.02` off the slab face, slightly lighter stone material (`lightness +0.04`). This represents the inscribed area. Do not attempt to render actual text in 3D — the bug name is shown only in the 2D `GravestoneCard` overlay.
+- **Slight lean**: each stone group gets a random `rotation.z` tilt of `±0.05` radians — old stones sink unevenly.
+
+#### Type 0 — Classic arch
+
+The most common gravestone shape. A rectangular slab with a rounded top.
+
+```ts
+function buildClassicArch(mat: THREE.MeshToonMaterial): THREE.Group {
+  const g = new THREE.Group();
+
+  // Main rectangular body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.8, 0.22), mat);
+  body.position.y = 0.9; // sits on ground at y=0
+  g.add(body);
+
+  // Arch top — half-cylinder rotated to cap the slab
+  // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments, heightSegments, openEnded, thetaStart, thetaLength)
+  const arch = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.5, 0.5, 0.22, 12, 1, false, 0, Math.PI),
+    mat
+  );
+  arch.rotation.z = Math.PI / 2; // lay it on its side
+  arch.position.set(0, 1.8, 0); // sit on top of the body
+  g.add(arch);
+
+  return g;
+}
+```
+
+#### Type 1 — Cross
+
+A vertical beam with a horizontal crossbar. More dramatic and recognisable at a distance.
+
+```ts
+function buildCross(mat: THREE.MeshToonMaterial): THREE.Group {
+  const g = new THREE.Group();
+
+  // Vertical beam — tall and slightly wider than it is deep
+  const vertical = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.2, 0.2), mat);
+  vertical.position.y = 1.1;
+  g.add(vertical);
+
+  // Horizontal crossbar — placed at ~70% of the total height
+  const horizontal = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.28, 0.2), mat);
+  horizontal.position.y = 1.6;
+  g.add(horizontal);
+
+  // Small base block — gives it weight and stops it looking like it floats
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.18, 0.3), mat);
+  base.position.y = 0.09;
+  g.add(base);
+
+  return g;
+}
+```
+
+#### Type 2 — Obelisk
+
+A tall, tapering rectangular monolith. Imposing and easy to spot across the graveyard.
+
+```ts
+function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
+  const g = new THREE.Group();
+
+  // Taper achieved with a custom BufferGeometry — 8 vertices, 2 faces per side
+  // Bottom face: 0.7 × 0.3, Top face: 0.25 × 0.12, Height: 2.8
+  const w0 = 0.35, d0 = 0.15; // half-extents at bottom
+  const w1 = 0.125, d1 = 0.06; // half-extents at top
+  const h = 2.8;
+
+  const positions = new Float32Array([
+    // bottom face (y=0)
+    -w0, 0,  d0,   w0, 0,  d0,   w0, 0, -d0,  -w0, 0, -d0,
+    // top face (y=h)
+    -w1, h,  d1,   w1, h,  d1,   w1, h, -d1,  -w1, h, -d1,
+  ]);
+  const indices = [
+    0,1,5, 0,5,4, // front
+    1,2,6, 1,6,5, // right
+    2,3,7, 2,7,6, // back
+    3,0,4, 3,4,7, // left
+    4,5,6, 4,6,7, // top
+    0,3,2, 0,2,1, // bottom
+  ];
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const obelisk = new THREE.Mesh(geo, mat);
+  g.add(obelisk);
+
+  // Pyramid cap
+  const cap = new THREE.Mesh(
+    new THREE.ConeGeometry(0.15, 0.3, 4),
+    mat
+  );
+  cap.position.y = h + 0.15;
+  cap.rotation.y = Math.PI / 4;
+  g.add(cap);
+
+  return g;
+}
+```
+
+#### Full `createGravestone` function
+
+```ts
+export function createGravestone(bug: BugRecord): THREE.Group {
+  const typeIndex = parseInt(bug.id[0], 16) % 3;
+
+  // Per-stone colour jitter — same quarry, different slabs
+  const hue = 0.73 + (Math.random() - 0.5) * 0.06;
+  const lightness = 0.22 + Math.random() * 0.06;
+  const stoneMat = new THREE.MeshToonMaterial({
+    color: new THREE.Color().setHSL(hue, 0.12, lightness),
+  });
+  const lightMat = new THREE.MeshToonMaterial({
+    color: new THREE.Color().setHSL(hue, 0.1, lightness + 0.05),
+  });
+  const mossMat = new THREE.MeshToonMaterial({
+    color: new THREE.Color(0x2d4a2d),
+  });
+
+  const group = new THREE.Group();
+  let stoneGroup: THREE.Group;
+
+  if (typeIndex === 0) stoneGroup = buildClassicArch(stoneMat);
+  else if (typeIndex === 1) stoneGroup = buildCross(stoneMat);
+  else stoneGroup = buildObelisk(stoneMat);
+
+  group.add(stoneGroup);
+
+  // --- Weathering details ---
+
+  // Name plate (all types)
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.04), lightMat);
+  plate.position.set(0, 0.7, 0.13);
+  group.add(plate);
+
+  // Moss patches — 3 to 5, random positions on the front face
+  const mossCount = 3 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < mossCount; i++) {
+    const mw = 0.1 + Math.random() * 0.25;
+    const mh = 0.08 + Math.random() * 0.2;
+    const moss = new THREE.Mesh(new THREE.BoxGeometry(mw, mh, 0.01), mossMat);
+    moss.position.set(
+      (Math.random() - 0.5) * 0.7,
+      0.2 + Math.random() * 1.2,
+      0.12
+    );
+    moss.rotation.z = (Math.random() - 0.5) * 0.4;
+    group.add(moss);
+  }
+
+  // Cracks — 2 to 3 thin slivers
+  const crackCount = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < crackCount; i++) {
+    const ch = 0.2 + Math.random() * 0.5;
+    const crack = new THREE.Mesh(new THREE.BoxGeometry(0.012, ch, 0.01), lightMat);
+    crack.position.set(
+      (Math.random() - 0.5) * 0.6,
+      0.3 + Math.random() * 1.0,
+      0.12
+    );
+    crack.rotation.z = (Math.random() - 0.5) * 0.3;
+    group.add(crack);
+  }
+
+  // Slight lean — old stone sinking into soil
+  group.rotation.z = (Math.random() - 0.5) * 0.1;
+
+  // Tag for raycasting
+  group.userData.bugId = bug.id;
+  // Tag every child mesh so raycaster can walk up to the group
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) child.userData.bugId = bug.id;
+  });
+
+  group.castShadow = true;
+  group.receiveShadow = true;
+
+  return group;
+}
+```
+
+> **Raycaster note**: `Raycaster.intersectObjects` returns individual `Mesh` hits, not `Group` hits. After getting the first intersection, walk up with `object.parent` until `userData.bugId` is found. Tag every child mesh as shown above.
+
+---
+
+### `graveyard.ts` — organic layout
+
+Gravestones must feel hand-placed — not in a grid. Use a seeded pseudo-random distribution:
+
+- Divide the ground into a loose grid of cells (spacing `2.5` on X, `3.0` on Z).
+- Within each cell, jitter the position by `±0.8` on X and `±0.9` on Z.
+- Random Y-axis rotation per stone: `±0.25` radians (more tilt than before — old graves rotate over decades).
+- Random non-uniform scale: X scale `0.85–1.1`, Y scale `0.9–1.3`, Z scale `0.9–1.05` — stones grow at different rates.
+- Skip ~15% of cells randomly to leave natural gaps in the graveyard.
+- Place newer bugs (higher `createdAt`) closer to the camera (lower Z) so the most recent obituaries are immediately visible.
+
+```ts
+export function buildGraveyard(
+  bugs: BugRecord[],
+  scene: THREE.Scene
+): Map<string, THREE.Group> {
+  const meshMap = new Map<string, THREE.Group>();
+  const cols = 5;
+  const spacingX = 2.5;
+  const spacingZ = 3.0;
+
+  // Sort newest first so they land nearest to camera
+  const sorted = [...bugs].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  sorted.forEach((bug, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+
+    const x = (col - (cols - 1) / 2) * spacingX + (Math.random() - 0.5) * 1.6;
+    const z = -row * spacingZ + (Math.random() - 0.5) * 1.8;
+
+    const stone = createGravestone(bug);
+    stone.position.set(x, 0, z);
+    stone.rotation.y = (Math.random() - 0.5) * 0.5;
+    stone.scale.set(
+      0.85 + Math.random() * 0.25,
+      0.9 + Math.random() * 0.4,
+      0.9 + Math.random() * 0.15
+    );
+
+    scene.add(stone);
+    meshMap.set(bug.id, stone);
+  });
+
+  return meshMap;
+}
+```
+
+---
+
+### `atmosphere.ts` — environmental elements
+
+- **Ground**: `PlaneGeometry(80, 80)` rotated flat (`rotation.x = -Math.PI / 2`), `MeshToonMaterial` colour `#1a1520`. Receives shadows.
+- **Moon**: `SphereGeometry(1.5, 16, 16)` placed at `(-10, 14, -25)`, `MeshToonMaterial` colour `#dde8f0`, `emissive: #aabbcc`, `emissiveIntensity: 0.3`. Does not cast shadows.
+- **Dead trees**: 4–6 trees scattered at the scene perimeter (Z between `-18` and `-8`, X between `±12`). Each tree:
+  - Trunk: `CylinderGeometry(0.08, 0.14, 2.5, 6)` — slightly irregular hexagonal cross-section for a hand-drawn feel.
+  - Branches: 3–4 `CylinderGeometry(0.03, 0.06, 1.0, 5)` meshes attached at the upper trunk, angled outward (`rotation.z = ±0.6–1.0`) and rotated around Y at random.
+  - All parts `MeshToonMaterial` colour `#1c1410` (near-black brown).
+- **Stars**: `Points` with 400 random positions in a hemisphere of radius `45` (only positive Y). `PointsMaterial` size `0.06`, colour `#e8e8ff`, `sizeAttenuation: true`.
+- **Fence**: optional — a row of thin `BoxGeometry` pickets (`0.06 × 0.9 × 0.06`) spaced `0.35` apart along the back edge of the graveyard (Z = `-(rows * 3 + 2)`), connected by two horizontal rails. `MeshToonMaterial` colour `#1a1510`. Adds depth without complexity.
+
+---
+
+### `lighting.ts`
+
+```ts
+export function createLighting(scene: THREE.Scene) {
+  // Very low ambient — the night is dark
+  const ambient = new THREE.AmbientLight(0x1a1a2e, 0.5);
+  scene.add(ambient);
+
+  // Moonlight — cold blue-white directional from top-left
+  const moon = new THREE.DirectionalLight(0x8899cc, 1.4);
+  moon.position.set(-10, 14, -5);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(1024, 1024);
+  moon.shadow.camera.near = 0.5;
+  moon.shadow.camera.far = 60;
+  moon.shadow.camera.left = -20;
+  moon.shadow.camera.right = 20;
+  moon.shadow.camera.top = 20;
+  moon.shadow.camera.bottom = -20;
+  scene.add(moon);
+
+  // Warm candle-glow point light — placed near the front gravestones
+  const candle1 = new THREE.PointLight(0xff6a00, 2.0, 7);
+  candle1.position.set(-2, 0.4, 4);
+  scene.add(candle1);
+
+  // Second candle on the right side — creates asymmetric warmth
+  const candle2 = new THREE.PointLight(0xff8c00, 1.4, 5);
+  candle2.position.set(3.5, 0.4, 2);
+  scene.add(candle2);
+
+  // Subtle cool rim from behind — separates distant stones from the fog
+  const rim = new THREE.DirectionalLight(0x334466, 0.4);
+  rim.position.set(5, 3, -15);
+  scene.add(rim);
+}
+```
+
+---
+
+### `raycaster.ts` — hover detection
+
+- Maintains a `THREE.Raycaster` and a `THREE.Vector2` for normalised mouse coordinates.
+- `updateMouse(event, canvas)` — converts `clientX/Y` to NDC (`-1` to `+1`) relative to the canvas bounds (not `window`) so it works correctly when the canvas does not fill the viewport.
+- `getHoveredBugId(camera, scene)` — casts the ray against all objects in the scene with `recursive: true`, then walks up the hit object's parent chain until a `userData.bugId` is found. Returns `null` if none.
+- `getScreenPosition(group, camera, renderer)` — projects the group's world position to CSS pixel coordinates for overlay placement.
+
+```ts
+// Walk up from the hit mesh to find the bugId on the group
+function findBugId(object: THREE.Object3D): string | null {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.userData.bugId) return current.userData.bugId as string;
+    current = current.parent;
+  }
+  return null;
+}
+
+export function getHoveredBugId(
+  raycaster: THREE.Raycaster,
+  mouse: THREE.Vector2,
+  camera: THREE.Camera,
+  scene: THREE.Scene
+): string | null {
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(scene.children, true);
+  for (const hit of hits) {
+    const id = findBugId(hit.object);
+    if (id) return id;
+  }
+  return null;
+}
+
+export function getScreenPosition(
+  group: THREE.Object3D,
+  camera: THREE.Camera,
+  renderer: THREE.WebGLRenderer
+): { x: number; y: number } {
+  const pos = new THREE.Vector3();
+  group.getWorldPosition(pos);
+  // Offset upward so the card appears above the stone, not inside it
+  pos.y += 1.2;
+  pos.project(camera);
+  return {
+    x: (pos.x * 0.5 + 0.5) * renderer.domElement.clientWidth,
+    y: (-pos.y * 0.5 + 0.5) * renderer.domElement.clientHeight,
+  };
+}
+```
+
+---
+
+### Hover highlight
+
+When a gravestone is hovered, traverse its group and set `emissive` to `0x2a1a44` (cold purple glow) on every `MeshToonMaterial` child. On hover exit, reset to `0x000000`. Change the cursor to `pointer` via `canvas.style.cursor`.
+
+Because each gravestone uses its own material instance (created fresh in `createGravestone`), it is safe to mutate the material directly without cloning.
+
+```ts
+function setEmissive(group: THREE.Group, color: number) {
+  group.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      (child.material as THREE.MeshToonMaterial).emissive.setHex(color);
+    }
+  });
+}
+```
+
+---
+
+### Candle flicker animation
+
+In the animation loop, animate the two candle `PointLight` intensities with low-frequency noise to simulate a real flame:
+
+```ts
+const t = clock.getElapsedTime();
+candle1.intensity = 2.0 + Math.sin(t * 3.7) * 0.3 + Math.sin(t * 11.3) * 0.15;
+candle2.intensity = 1.4 + Math.sin(t * 4.1) * 0.2 + Math.sin(t * 9.7) * 0.1;
+```
+
+---
+
+### Performance constraints
+
+- Target 60 fps on mid-range hardware.
+- Cap `devicePixelRatio` at `2`.
+- Shadow map size: `1024 × 1024` — sufficient for this scene scale without GPU cost.
+- Do not use post-processing passes (`EffectComposer`) — the Tim Burton look is achieved through materials and lighting, not filters.
+- Dispose of all geometries, materials, and controls on unmount:
+
+```ts
+return () => {
+  cancelAnimationFrame(rafId);
+  controls.dispose();
+  renderer.dispose();
+  scene.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      obj.geometry.dispose();
+      if (Array.isArray(obj.material)) {
+        obj.material.forEach((m) => m.dispose());
+      } else {
+        (obj.material as THREE.Material).dispose();
+      }
+    }
+  });
+};
+```
+
+---
+
+## 11. Styling
+
+- **Tailwind CSS only** for 2D UI elements. Do not add a global `.css` file for component-specific styles.
+- The Tim Burton aesthetic governs all 2D elements that overlay the scene (modal, card, form, nav).
+- **Colour palette**:
+  - Background: `slate-950` / `#0a0a0f`
+  - Surface (cards, modal): `stone-900` with a faint purple tint (`bg-[#1c1824]`)
+  - Primary text: `stone-200`
+  - Accent: `purple-400` for names and highlights; `amber-400` for dates and epitaphs
+  - Borders: `stone-700` at low opacity
+- **Fonts** — load via `next/font/google` in `app/layout.tsx`:
+  - Display / headings: **Cinzel** (gothic serif — graveyard inscriptions)
+  - Body: **Crimson Text** (old-style serif — obituary prose)
+- **The `/submit` page** should feel like filling out a death certificate — dark form, Cinzel labels, parchment-toned inputs (`bg-stone-800`).
+- Do not use inline `style` props unless Tailwind cannot express the value (e.g. specific 3D transform origins for the card flip).
+
+---
+
+## 12. Animations
+
+Framer Motion is used **only for 2D UI elements**. Three.js handles all in-scene motion.
+
+- **`GravestoneCard` flip**: 3D Y-axis rotation via Framer Motion. Front face at `rotateY: 0`, back face at `rotateY: 180`. Use `backfaceVisibility: "hidden"` on both faces. Wrap in `style={{ perspective: 1000 }}` on the container.
+- **`GravestoneCard` entrance**: `initial={{ opacity: 0, y: 10 }}` → `animate={{ opacity: 1, y: 0 }}`, duration `0.2s`. Triggered when the card appears on hover.
+- **`ObituaryModal`**: backdrop fades in with `initial={{ opacity: 0 }}` → `animate={{ opacity: 1 }}`, duration `0.2s`. Modal panel slides up: `initial={{ y: 40, opacity: 0 }}` → `animate={{ y: 0, opacity: 1 }}`, duration `0.3s`.
+- **`AnimatePresence`**: wrap both `GravestoneCard` (in overlay) and `ObituaryModal` in `AnimatePresence` so exit animations play correctly when they unmount.
+- Respect `prefers-reduced-motion`: use `useReducedMotion()` from Framer Motion and fall back to opacity-only transitions when it returns `true`.
+
+---
+
+## 13. Coding Standards
 
 ### TypeScript
 
@@ -487,7 +1056,7 @@ export type IndexEntry = {
 
 ---
 
-## 13. Strict Prohibitions
+## 14. Strict Prohibitions
 
 The following are **never** acceptable in this codebase. An agent that violates any of these rules must revert immediately.
 
@@ -503,10 +1072,17 @@ The following are **never** acceptable in this codebase. An agent that violates 
 | Changing the Groq model | `llama-3.3-70b-versatile` is validated for this prompt; other models may reject the JSON-only instruction |
 | Committing `.env.local` or any file containing secrets | Never |
 | Installing new dependencies without updating this file | Undocumented dependencies break agent reproducibility |
+| `THREE.CapsuleGeometry` | Not available in Three.js r128 — introduced in r142 |
+| `MeshStandardMaterial` or `MeshPhongMaterial` in the scene | Use `MeshToonMaterial` exclusively to preserve the Tim Burton cel-shaded aesthetic |
+| Post-processing (`EffectComposer`, passes) | Performance overhead; the visual style is achieved through materials and lighting |
+| Importing Three.js in a Server Component | Three.js requires `window` — it must only run in Client Components or inside `useEffect` |
+| Three.js scene code in `src/components/` | All scene logic belongs in `src/three/`; components only mount the canvas and wire up state |
+| Camera auto-drift sinusoidal animation on position | Orbit Controls manage camera position — mutating `camera.position` in the loop breaks damping |
+| Importing `OrbitControls` from `three` directly | Import only from `three/examples/jsm/controls/OrbitControls` |
 
 ---
 
-## 14. Deploy
+## 15. Deploy
 
 This project deploys to **Vercel** with zero configuration.
 

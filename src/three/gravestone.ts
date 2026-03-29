@@ -92,15 +92,6 @@ function buildClassicArch(mat: THREE.MeshToonMaterial): THREE.Group {
   arch.castShadow = true;
   group.add(arch);
 
-  // Name-plate — thin raised panel mimicking an engraved inscription area.
-  const plate = new THREE.Mesh(
-    new THREE.BoxGeometry(0.6, 0.25, 0.04),
-    mat.clone(),
-  );
-  (plate.material as THREE.MeshToonMaterial).color.offsetHSL(0, 0, 0.04);
-  plate.position.set(0, 0.6, 0.13);
-  group.add(plate);
-
   return group;
 }
 
@@ -144,9 +135,9 @@ function buildCross(mat: THREE.MeshToonMaterial): THREE.Group {
 // ---------------------------------------------------------------------------
 
 /**
- * Tall tapering rectangular monolith. Imposing and easy to spot across the
- * graveyard. Built from a custom BufferGeometry (8 vertices) since Three.js
- * has no built-in taper primitive.
+ * Tall tapering rectangular monolith with a pyramid cap. Imposing and easy to
+ * spot across the graveyard. Built from a custom BufferGeometry (8 vertices)
+ * since Three.js has no built-in taper primitive.
  */
 function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
   const group = new THREE.Group();
@@ -193,7 +184,67 @@ function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
   base.position.y = 0.06;
   group.add(base);
 
+  // Pyramid cap — four-sided pointed top, rotated 45° so corners align with faces.
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4), mat);
+  cap.position.y = h + 0.15;
+  cap.rotation.y = Math.PI / 4;
+  cap.castShadow = true;
+  group.add(cap);
+
   return group;
+}
+
+// ---------------------------------------------------------------------------
+// Weathering helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Scatter moss patches on the front face of the stone. Each patch is a thin
+ * flat box pressed lightly against the stone surface, tinted dark green.
+ */
+function addMoss(group: THREE.Group, rng: () => number): void {
+  const mossMat = new THREE.MeshToonMaterial({
+    color: new THREE.Color(0x2d4a2d),
+  });
+  const count = 3 + Math.floor(rng() * 3); // 3–5 patches
+  for (let i = 0; i < count; i++) {
+    const mw = 0.08 + rng() * 0.22;
+    const mh = 0.06 + rng() * 0.18;
+    const moss = new THREE.Mesh(new THREE.BoxGeometry(mw, mh, 0.01), mossMat);
+    moss.position.set(
+      (rng() - 0.5) * 0.7,
+      0.2 + rng() * 1.2,
+      0.12,
+    );
+    moss.rotation.z = (rng() - 0.5) * 0.4;
+    group.add(moss);
+  }
+}
+
+/**
+ * Add thin crack slivers pressed against the front face of the stone.
+ * Slightly lighter than the base stone to catch the directional light.
+ */
+function addCracks(
+  group: THREE.Group,
+  rng: () => number,
+  lightMat: THREE.MeshToonMaterial,
+): void {
+  const count = 2 + Math.floor(rng() * 2); // 2–3 cracks
+  for (let i = 0; i < count; i++) {
+    const ch = 0.18 + rng() * 0.45;
+    const crack = new THREE.Mesh(
+      new THREE.BoxGeometry(0.012, ch, 0.01),
+      lightMat,
+    );
+    crack.position.set(
+      (rng() - 0.5) * 0.6,
+      0.3 + rng() * 1.0,
+      0.12,
+    );
+    crack.rotation.z = (rng() - 0.5) * 0.3;
+    group.add(crack);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +257,10 @@ function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
  *
  * Type selection uses `hashId(bug.id) % 3` — hashing the full UUID string
  * guarantees an even distribution across all three types regardless of UUID
- * format or buffer size (fixes the "same first character" clustering bug).
+ * format or buffer size.
+ *
+ * All per-stone randomness (colour, weathering, lean) is driven by a seeded
+ * RNG so the result is identical on every render.
  *
  * The group's `userData.bugId` is set so the raycaster can map a hit mesh
  * back to its record without maintaining a separate lookup table.
@@ -217,6 +271,10 @@ export function createGravestone(bug: BugRecord): THREE.Group {
 
   const mat = createStoneMaterial(rng);
 
+  // Slightly lighter clone for name plate and crack details.
+  const lightMat = mat.clone();
+  lightMat.color.offsetHSL(0, 0, 0.04);
+
   // Select one of three distinct shapes using the full-id hash.
   const typeIndex = hashId(bug.id) % 3;
   if (typeIndex === 0) {
@@ -226,6 +284,20 @@ export function createGravestone(bug: BugRecord): THREE.Group {
   } else {
     group.add(buildObelisk(mat));
   }
+
+  // Name plate — thin raised panel mimicking an engraved inscription area.
+  // Do not attempt to render actual text in 3D — bug name is shown in the
+  // 2D GravestoneCard overlay.
+  const plate = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.25, 0.04),
+    lightMat,
+  );
+  plate.position.set(0, 0.6, 0.13);
+  group.add(plate);
+
+  // Weathering — all seeded so position is stable across re-renders.
+  addMoss(group, rng);
+  addCracks(group, rng, lightMat.clone());
 
   // Small random tilt so stones look hand-placed and slightly weathered.
   group.rotation.z = (rng() - 0.5) * 0.06; // ±1.7° lean left/right

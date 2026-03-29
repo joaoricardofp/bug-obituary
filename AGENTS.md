@@ -51,7 +51,7 @@ cause of death, legacy, and an epitaph — and is displayed on a visual graveyar
 | Language | TypeScript (strict mode) | No `any`. No implicit `any`. |
 | Styling | Tailwind CSS v3 | Utility-first. No CSS Modules unless scoping requires it. |
 | AI | Groq API — `llama-3.3-70b-versatile` | Free tier. Never switch model without updating this file. |
-| Persistence | Vercel KV (Redis) | Falls back to a local JSON file in development. |
+| Persistence | Upstash Redis | Vercel KV was discontinued — use Upstash via `@upstash/redis`. Falls back to a local JSON file in development. |
 | 3D Scene | Three.js (r128) | Full immersive graveyard — gravestones, fog, lighting, hover via raycasting. |
 | UI Animations | Framer Motion | Modal entrance, card flip, and 2D overlay transitions only. |
 | Deploy | Vercel | Single-command deploy via `vercel --prod`. |
@@ -122,9 +122,10 @@ Never hard-code secrets. Never commit `.env.local`.
 # Groq API — get your free key at https://console.groq.com
 GROQ_API_KEY=
 
-# Vercel KV — provisioned automatically on Vercel, copy from dashboard for local dev
-KV_REST_API_URL=
-KV_REST_API_TOKEN=
+# Upstash Redis — create a free database at https://console.upstash.com
+# Copy the REST URL and token from the database dashboard
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
 
 # Optional: set to "local" to use the JSON file fallback instead of KV in development
 PERSISTENCE_DRIVER=
@@ -138,9 +139,9 @@ Always access variables through a typed config helper. Never call `process.env` 
 // lib/config.ts
 export const config = {
   groqApiKey: process.env.GROQ_API_KEY!,
-  kvUrl: process.env.KV_REST_API_URL!,
-  kvToken: process.env.KV_REST_API_TOKEN!,
-  persistenceDriver: process.env.PERSISTENCE_DRIVER ?? "kv",
+  upstashUrl: process.env.UPSTASH_REDIS_REST_URL!,
+  upstashToken: process.env.UPSTASH_REDIS_REST_TOKEN!,
+  persistenceDriver: process.env.PERSISTENCE_DRIVER ?? "upstash",
 } as const;
 ```
 
@@ -339,6 +340,14 @@ The Groq free tier allows **30 requests per minute** on `llama-3.3-70b-versatile
 
 **File**: `lib/kv.ts`
 
+Vercel KV has been discontinued. This project uses **Upstash Redis** via the `@upstash/redis` package, which provides an HTTP-based Redis client that works in both Node.js and Edge runtimes.
+
+### Installation
+
+```bash
+npm install @upstash/redis
+```
+
 ### Schema
 
 Each bug is stored as a single key-value pair:
@@ -351,40 +360,66 @@ A sorted index is maintained separately:
 - **Key**: `bugs:index`
 - **Value**: array of `{ id, createdAt }` sorted descending by `createdAt`
 
-### Vercel KV (production)
+### Upstash client initialisation
 
 ```ts
-import { kv } from "@vercel/kv";
+// lib/kv.ts
+import { Redis } from "@upstash/redis";
+import { config } from "./config";
 
-export async function saveBug(record: BugRecord): Promise<void> {
-  await kv.set(`bug:${record.id}`, JSON.stringify(record));
-  // Update index
-  const index = (await kv.get<IndexEntry[]>("bugs:index")) ?? [];
+const redis = new Redis({
+  url: config.upstashUrl,
+  token: config.upstashToken,
+});
+```
+
+Instantiate once at module level. Do not instantiate inside individual functions.
+
+### Production implementation (Upstash)
+
+```ts
+export async function saveBugKv(record: BugRecord): Promise<void> {
+  await redis.set(`bug:${record.id}`, JSON.stringify(record));
+
+  const raw = await redis.get<string>("bugs:index");
+  const index: IndexEntry[] = raw ? JSON.parse(raw) : [];
   index.unshift({ id: record.id, createdAt: record.createdAt });
-  await kv.set("bugs:index", JSON.stringify(index));
+  await redis.set("bugs:index", JSON.stringify(index));
 }
 
-export async function getAllBugs(): Promise<BugRecord[]> {
-  const index = (await kv.get<IndexEntry[]>("bugs:index")) ?? [];
+export async function getAllBugsKv(): Promise<BugRecord[]> {
+  const raw = await redis.get<string>("bugs:index");
+  const index: IndexEntry[] = raw ? JSON.parse(raw) : [];
+
   const records = await Promise.all(
-    index.map((entry) => kv.get<BugRecord>(`bug:${entry.id}`))
+    index.map(async (entry) => {
+      const data = await redis.get<string>(`bug:${entry.id}`);
+      return data ? (JSON.parse(data) as BugRecord) : null;
+    })
   );
+
   return records.filter(Boolean) as BugRecord[];
 }
 ```
 
 ### Local JSON fallback (development)
 
-When `PERSISTENCE_DRIVER=local`, use a JSON file at `data/bugs.json`.  
+When `PERSISTENCE_DRIVER=local`, use a JSON file at `data/bugs.json`.
 This file must be in `.gitignore`.
 
 ```ts
-// lib/kv.ts — driver selection
-import { config } from "./config";
-
+// Driver selection
 export const saveBug   = config.persistenceDriver === "local" ? saveBugLocal   : saveBugKv;
 export const getAllBugs = config.persistenceDriver === "local" ? getAllBugsLocal : getAllBugsKv;
 ```
+
+### Upstash setup (production)
+
+1. Go to [console.upstash.com](https://console.upstash.com) → **Create database**.
+2. Choose **Regional** (lower latency than Global for a single-region Vercel deploy). Pick the same region as your Vercel deployment (e.g. `us-east-1`).
+3. Copy **REST URL** and **REST Token** from the database dashboard.
+4. Add them to the Vercel dashboard under **Settings → Environment Variables** as `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
+5. For local development, paste the same values into `.env.local`.
 
 ---
 
@@ -556,7 +591,9 @@ return () => {
 
 ### `gravestone.ts` — gravestone geometry (3 types, randomly assigned)
 
-Each bug is assigned one of three archetypal gravestone shapes. The type is deterministic based on the bug's `id` so it never changes between renders: `type = parseInt(id[0], 16) % 3`.
+Each bug is assigned one of three archetypal gravestone shapes. The type is deterministic based on the bug's `id` so it never changes between renders: `type = hashId(id) % 3`.
+
+`hashId` hashes the **full UUID string** to a stable 32-bit integer — this guarantees an even distribution across all three types regardless of UUID format, unlike `parseInt(id[0], 16) % 3` which clusters on whichever hex digits are most common.
 
 All types share the same stone `MeshToonMaterial`. Stone base colour: `#3d3a4a`. Per-stone hue jitter: `±0.03` on the HSL hue channel (keeps them feeling like the same stone quarry, not a rainbow).
 
@@ -580,14 +617,15 @@ function buildClassicArch(mat: THREE.MeshToonMaterial): THREE.Group {
   body.position.y = 0.9; // sits on ground at y=0
   g.add(body);
 
-  // Arch top — half-cylinder rotated to cap the slab
+  // Arch cap — correct orientation: curved surface facing up, flat face down.
   // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments, heightSegments, openEnded, thetaStart, thetaLength)
   const arch = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.5, 0.5, 0.22, 12, 1, false, 0, Math.PI),
+    new THREE.CylinderGeometry(0.5, 0.5, 0.22, 16, 1, false, 0, Math.PI),
     mat
   );
-  arch.rotation.z = Math.PI / 2; // lay it on its side
-  arch.position.set(0, 1.8, 0); // sit on top of the body
+  arch.rotation.x = Math.PI / 2; // stand upright so curved surface faces up
+  arch.rotation.y = Math.PI / 2; // align flat cut along the body width axis
+  arch.position.set(0, 1.8, 0); // sit exactly on top of the body's top edge
   g.add(arch);
 
   return g;
@@ -655,15 +693,26 @@ function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
   geo.computeVertexNormals();
 
   const obelisk = new THREE.Mesh(geo, mat);
+  obelisk.castShadow = true;
   g.add(obelisk);
 
-  // Pyramid cap
+  // Stepped base block — gives it weight and visual grounding.
+  const base = new THREE.Mesh(
+    new THREE.BoxGeometry(0.8, 0.12, 0.35),
+    mat.clone()
+  );
+  (base.material as THREE.MeshToonMaterial).color.offsetHSL(0, 0, 0.03);
+  base.position.y = 0.06;
+  g.add(base);
+
+  // Pyramid cap — four-sided pointed top, rotated 45° so corners align with faces.
   const cap = new THREE.Mesh(
     new THREE.ConeGeometry(0.15, 0.3, 4),
     mat
   );
   cap.position.y = h + 0.15;
   cap.rotation.y = Math.PI / 4;
+  cap.castShadow = true;
   g.add(cap);
 
   return g;
@@ -674,78 +723,47 @@ function buildObelisk(mat: THREE.MeshToonMaterial): THREE.Group {
 
 ```ts
 export function createGravestone(bug: BugRecord): THREE.Group {
-  const typeIndex = parseInt(bug.id[0], 16) % 3;
+  const rng = seededRandom(bug.id); // all randomness is seeded — stable across re-renders
 
-  // Per-stone colour jitter — same quarry, different slabs
-  const hue = 0.73 + (Math.random() - 0.5) * 0.06;
-  const lightness = 0.22 + Math.random() * 0.06;
-  const stoneMat = new THREE.MeshToonMaterial({
-    color: new THREE.Color().setHSL(hue, 0.12, lightness),
-  });
-  const lightMat = new THREE.MeshToonMaterial({
-    color: new THREE.Color().setHSL(hue, 0.1, lightness + 0.05),
-  });
-  const mossMat = new THREE.MeshToonMaterial({
-    color: new THREE.Color(0x2d4a2d),
-  });
+  const mat = createStoneMaterial(rng);
+
+  // Slightly lighter clone for name plate and crack details.
+  const lightMat = mat.clone();
+  lightMat.color.offsetHSL(0, 0, 0.04);
 
   const group = new THREE.Group();
-  let stoneGroup: THREE.Group;
 
-  if (typeIndex === 0) stoneGroup = buildClassicArch(stoneMat);
-  else if (typeIndex === 1) stoneGroup = buildCross(stoneMat);
-  else stoneGroup = buildObelisk(stoneMat);
+  // Select one of three distinct shapes using the full-id hash.
+  const typeIndex = hashId(bug.id) % 3;
+  if (typeIndex === 0) {
+    group.add(buildClassicArch(mat));
+  } else if (typeIndex === 1) {
+    group.add(buildCross(mat));
+  } else {
+    group.add(buildObelisk(mat));
+  }
 
-  group.add(stoneGroup);
-
-  // --- Weathering details ---
-
-  // Name plate (all types)
+  // Name plate — thin raised panel mimicking an engraved inscription area.
   const plate = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.25, 0.04), lightMat);
-  plate.position.set(0, 0.7, 0.13);
+  plate.position.set(0, 0.6, 0.13);
   group.add(plate);
 
-  // Moss patches — 3 to 5, random positions on the front face
-  const mossCount = 3 + Math.floor(Math.random() * 3);
-  for (let i = 0; i < mossCount; i++) {
-    const mw = 0.1 + Math.random() * 0.25;
-    const mh = 0.08 + Math.random() * 0.2;
-    const moss = new THREE.Mesh(new THREE.BoxGeometry(mw, mh, 0.01), mossMat);
-    moss.position.set(
-      (Math.random() - 0.5) * 0.7,
-      0.2 + Math.random() * 1.2,
-      0.12
-    );
-    moss.rotation.z = (Math.random() - 0.5) * 0.4;
-    group.add(moss);
-  }
+  // Weathering — seeded so positions are stable across re-renders.
+  addMoss(group, rng);
+  addCracks(group, rng, lightMat.clone());
 
-  // Cracks — 2 to 3 thin slivers
-  const crackCount = 2 + Math.floor(Math.random() * 2);
-  for (let i = 0; i < crackCount; i++) {
-    const ch = 0.2 + Math.random() * 0.5;
-    const crack = new THREE.Mesh(new THREE.BoxGeometry(0.012, ch, 0.01), lightMat);
-    crack.position.set(
-      (Math.random() - 0.5) * 0.6,
-      0.3 + Math.random() * 1.0,
-      0.12
-    );
-    crack.rotation.z = (Math.random() - 0.5) * 0.3;
-    group.add(crack);
-  }
+  // Small random tilt so stones look hand-placed and slightly weathered.
+  group.rotation.z = (rng() - 0.5) * 0.06; // ±1.7° lean left/right
+  group.rotation.x = (rng() - 0.5) * 0.04; // ±1.1° lean forward/back
 
-  // Slight lean — old stone sinking into soil
-  group.rotation.z = (Math.random() - 0.5) * 0.1;
-
-  // Tag for raycasting
+  // Tag the group so raycaster.ts can resolve the hovered bug.
   group.userData.bugId = bug.id;
-  // Tag every child mesh so raycaster can walk up to the group
+  // Also tag every child mesh so hits on individual parts bubble up correctly.
   group.traverse((child) => {
-    if (child instanceof THREE.Mesh) child.userData.bugId = bug.id;
+    if (child instanceof THREE.Mesh) {
+      child.userData.bugId = bug.id;
+    }
   });
-
-  group.castShadow = true;
-  group.receiveShadow = true;
 
   return group;
 }
@@ -755,46 +773,65 @@ export function createGravestone(bug: BugRecord): THREE.Group {
 
 ---
 
-### `graveyard.ts` — organic layout
+### `graveyard.ts` — organic polar layout
 
-Gravestones must feel hand-placed — not in a grid. Use a seeded pseudo-random distribution:
+Gravestones are distributed using a **scattered polar arc** rather than a rigid grid — this avoids the mechanical row-and-column feel.
 
-- Divide the ground into a loose grid of cells (spacing `2.5` on X, `3.0` on Z).
-- Within each cell, jitter the position by `±0.8` on X and `±0.9` on Z.
-- Random Y-axis rotation per stone: `±0.25` radians (more tilt than before — old graves rotate over decades).
-- Random non-uniform scale: X scale `0.85–1.1`, Y scale `0.9–1.3`, Z scale `0.9–1.05` — stones grow at different rates.
-- Skip ~15% of cells randomly to leave natural gaps in the graveyard.
-- Place newer bugs (higher `createdAt`) closer to the camera (lower Z) so the most recent obituaries are immediately visible.
+- Sort newest-first so the most recent bugs appear closest to the camera.
+- Distribute stones across a **126° fan** (±63°) centred on the camera's look-at point, with per-stone angle jitter so no stone lines up perfectly.
+- Depth increases for older bugs (newer: Z ≈ −2 to −5 · older: Z ≈ −5 to −14, fading into fog).
+- All randomness is seeded from `hashId(bug.id)` so positions are stable across re-renders.
+- Stones face roughly toward the camera position `(0, y, 12)` with a small random Y-rotation offset.
+- Non-uniform scale per axis gives each stone a hand-carved feel.
 
 ```ts
 export function buildGraveyard(
   bugs: BugRecord[],
-  scene: THREE.Scene
+  scene: THREE.Scene,
 ): Map<string, THREE.Group> {
   const meshMap = new Map<string, THREE.Group>();
-  const cols = 5;
-  const spacingX = 2.5;
-  const spacingZ = 3.0;
 
-  // Sort newest first so they land nearest to camera
+  // Sort newest-first — newer bugs appear closer to the camera.
   const sorted = [...bugs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    (a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 
   sorted.forEach((bug, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
+    const seed = hashId(bug.id);
 
-    const x = (col - (cols - 1) / 2) * spacingX + (Math.random() - 0.5) * 1.6;
-    const z = -row * spacingZ + (Math.random() - 0.5) * 1.8;
+    // Cheap LCG keyed per offset so each dimension gets its own stream.
+    const pseudoRand = (offset: number): number =>
+      (((seed + offset) * 1664525 + 1013904223) >>> 0) / 0xffffffff;
+
+    // Distribute across a 126° fan centred on the camera's look-at point.
+    const totalAngle = Math.PI * 0.7;
+    const angleStep = sorted.length > 1 ? totalAngle / (sorted.length - 1) : 0;
+    const baseAngle = -totalAngle / 2 + i * angleStep;
+    const angleJitter = (pseudoRand(1) - 0.5) * (angleStep * 0.6);
+    const finalAngle = baseAngle + angleJitter;
+
+    // Newer bugs: z ≈ −2 to −5. Older bugs: z ≈ −5 to −14, fading into fog.
+    const depthFraction = sorted.length > 1 ? i / (sorted.length - 1) : 0;
+    const baseDepth = 2 + depthFraction * 10;
+    const depthJitter = (pseudoRand(2) - 0.5) * 2.5;
+    const finalDepth = Math.max(1.5, baseDepth + depthJitter);
+
+    const x = Math.sin(finalAngle) * finalDepth + (pseudoRand(3) - 0.5) * 1.2;
+    const z = -Math.cos(finalAngle) * finalDepth + (pseudoRand(4) - 0.5) * 1.0;
 
     const stone = createGravestone(bug);
     stone.position.set(x, 0, z);
-    stone.rotation.y = (Math.random() - 0.5) * 0.5;
+
+    // Rotate stones to face roughly toward the camera position (0, y, 12).
+    const angleToCamera = Math.atan2(-x, -z - 12);
+    stone.rotation.y = angleToCamera + (pseudoRand(5) - 0.5) * 0.4;
+
+    // Non-uniform scale for a hand-carved, organic feel.
     stone.scale.set(
-      0.85 + Math.random() * 0.25,
-      0.9 + Math.random() * 0.4,
-      0.9 + Math.random() * 0.15
+      0.85 + pseudoRand(6) * 0.3,
+      0.9 + pseudoRand(7) * 0.45,
+      0.9 + pseudoRand(8) * 0.15,
     );
 
     scene.add(stone);
@@ -822,13 +859,18 @@ export function buildGraveyard(
 
 ### `lighting.ts`
 
+`createLighting` **returns** the two candle `PointLight` references so the animation loop in `GraveyardScene` can animate their intensities for a flicker effect.
+
 ```ts
-export function createLighting(scene: THREE.Scene) {
-  // Very low ambient — the night is dark
+export function createLighting(scene: THREE.Scene): {
+  candle1: THREE.PointLight;
+  candle2: THREE.PointLight;
+} {
+  // Low ambient — prevents shadows from going pure black.
   const ambient = new THREE.AmbientLight(0x1a1a2e, 0.5);
   scene.add(ambient);
 
-  // Moonlight — cold blue-white directional from top-left
+  // Moonlight — cold blue-white directional from top-left.
   const moon = new THREE.DirectionalLight(0x8899cc, 1.4);
   moon.position.set(-10, 14, -5);
   moon.castShadow = true;
@@ -841,20 +883,22 @@ export function createLighting(scene: THREE.Scene) {
   moon.shadow.camera.bottom = -20;
   scene.add(moon);
 
-  // Warm candle-glow point light — placed near the front gravestones
+  // Warm candle-glow — placed near the front gravestones, left side.
   const candle1 = new THREE.PointLight(0xff6a00, 2.0, 7);
   candle1.position.set(-2, 0.4, 4);
   scene.add(candle1);
 
-  // Second candle on the right side — creates asymmetric warmth
+  // Second candle — right side, creates asymmetric warmth.
   const candle2 = new THREE.PointLight(0xff8c00, 1.4, 5);
   candle2.position.set(3.5, 0.4, 2);
   scene.add(candle2);
 
-  // Subtle cool rim from behind — separates distant stones from the fog
+  // Subtle cool rim from behind — separates distant stones from the fog.
   const rim = new THREE.DirectionalLight(0x334466, 0.4);
   rim.position.set(5, 3, -15);
   scene.add(rim);
+
+  return { candle1, candle2 };
 }
 ```
 
@@ -918,13 +962,33 @@ When a gravestone is hovered, traverse its group and set `emissive` to `0x2a1a44
 
 Because each gravestone uses its own material instance (created fresh in `createGravestone`), it is safe to mutate the material directly without cloning.
 
+This logic lives inline in `GraveyardScene.tsx`'s animation loop, not in a separate utility, so it has direct access to the `meshMap` and React state setters.
+
 ```ts
-function setEmissive(group: THREE.Group, color: number) {
-  group.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      (child.material as THREE.MeshToonMaterial).emissive.setHex(color);
+// Inside the animation loop in GraveyardScene.tsx
+if (newHoveredId !== hoveredIdRef.current) {
+  // Reset emissive on previously hovered group.
+  if (hoveredIdRef.current) {
+    const prev = meshMap.get(hoveredIdRef.current);
+    if (prev) {
+      prev.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          (child.material as THREE.MeshToonMaterial).emissive.set(0x000000);
+        }
+      });
     }
-  });
+  }
+  // Apply cold purple highlight to newly hovered group.
+  if (newHoveredId) {
+    const next = meshMap.get(newHoveredId);
+    if (next) {
+      next.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+          (child.material as THREE.MeshToonMaterial).emissive.set(0x2a1a44);
+        }
+      });
+    }
+  }
 }
 ```
 
@@ -1090,8 +1154,8 @@ This project deploys to **Vercel** with zero configuration.
 
 - [ ] All environment variables are set in the Vercel dashboard (Settings → Environment Variables).
 - [ ] `GROQ_API_KEY` is set for Production and Preview environments.
-- [ ] Vercel KV is provisioned and linked to the project (Storage → Create → KV).
-- [ ] `KV_REST_API_URL` and `KV_REST_API_TOKEN` are populated (Vercel adds them automatically after linking KV).
+- [ ] Upstash database is created at [console.upstash.com](https://console.upstash.com).
+- [ ] `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are set in Vercel dashboard.
 - [ ] `data/` is in `.gitignore` (local JSON fallback must not ship).
 - [ ] `npm run build` passes locally with no TypeScript errors.
 
@@ -1101,12 +1165,9 @@ This project deploys to **Vercel** with zero configuration.
 vercel --prod
 ```
 
-### Vercel KV provisioning
+### Upstash setup
 
-1. Go to your Vercel project → **Storage** → **Create** → **KV**.
-2. Link it to the project.
-3. Vercel automatically injects `KV_REST_API_URL` and `KV_REST_API_TOKEN` into all environments.
-4. For local development, copy those values from the Vercel dashboard into `.env.local`.
+See Section 8 for the full step-by-step. Short version: create a Regional database at [console.upstash.com](https://console.upstash.com), copy the REST URL and token, add them to Vercel's environment variables and to `.env.local` for local development.
 
 ### Regions
 

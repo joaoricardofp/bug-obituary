@@ -60,12 +60,14 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
     // Orbit Controls — drag to rotate, scroll to zoom, right-click to pan.
     const controls = createControls(camera, canvas);
 
-    createLighting(scene);
+    // createLighting returns candle references for flicker animation.
+    const { candle1, candle2 } = createLighting(scene);
     createAtmosphere(scene);
 
     const meshMap = buildGraveyard(bugs, scene);
     meshMapRef.current = meshMap;
 
+    const clock = new THREE.Clock();
     let rafId = 0;
 
     const animate = () => {
@@ -73,6 +75,11 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
 
       // Required for damping interpolation to work each frame.
       controls.update();
+
+      // Candle flicker — low-frequency sine noise simulates a real flame.
+      const t = clock.getElapsedTime();
+      candle1.intensity = 2.0 + Math.sin(t * 3.7) * 0.3 + Math.sin(t * 11.3) * 0.15;
+      candle2.intensity = 1.4 + Math.sin(t * 4.1) * 0.2 + Math.sin(t * 9.7) * 0.1;
 
       // Raycasting — detect hovered gravestone.
       const newHoveredId = getHoveredBugId(camera, meshMap);
@@ -92,14 +99,14 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
           }
         }
 
-        // Apply highlight to newly hovered group.
+        // Apply cold purple highlight to newly hovered group.
         if (newHoveredId) {
           const next = meshMap.get(newHoveredId);
           if (next) {
             next.traverse((child) => {
               if (child instanceof THREE.Mesh) {
                 (child.material as THREE.MeshToonMaterial).emissive.set(
-                  0x332244,
+                  0x2a1a44,
                 );
               }
             });

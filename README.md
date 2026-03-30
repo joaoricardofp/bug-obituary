@@ -6,7 +6,7 @@
 
 [![GitHub](https://img.shields.io/badge/github-joaoricardofp%2Fbug--obituary-181717?style=flat&logo=github)](https://github.com/joaoricardofp/bug-obituary.git)
 [![Deploy](https://img.shields.io/badge/deploy-vercel-000000?style=flat&logo=vercel)](https://vercel.com)
-[![Next.js](https://img.shields.io/badge/Next.js-14-black?style=flat&logo=next.js)](https://nextjs.org)
+[![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat&logo=next.js)](https://nextjs.org)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 
 ---
@@ -14,6 +14,8 @@
 ## 📸 Screenshots
 
 ![Graveyard Scene](./public/screenshots/graveyard.png)
+
+![Bury a Bug](./public/screenshots/bury-a-bug.png)
 
 ---
 

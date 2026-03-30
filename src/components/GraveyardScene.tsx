@@ -67,7 +67,7 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
     const meshMap = buildGraveyard(bugs, scene);
     meshMapRef.current = meshMap;
 
-    const clock = new THREE.Clock();
+    const timer = new THREE.Timer();
     let rafId = 0;
 
     const animate = () => {
@@ -77,7 +77,8 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
       controls.update();
 
       // Candle flicker — low-frequency sine noise simulates a real flame.
-      const t = clock.getElapsedTime();
+      timer.update();
+      const t = timer.getElapsed();
       candle1.intensity = 2.0 + Math.sin(t * 3.7) * 0.3 + Math.sin(t * 11.3) * 0.15;
       candle2.intensity = 1.4 + Math.sin(t * 4.1) * 0.2 + Math.sin(t * 9.7) * 0.1;
 

@@ -24,8 +24,9 @@ export function createScene(canvas: HTMLCanvasElement): {
     0.1,
     100,
   );
-  camera.position.set(0, 3, 10);
-  camera.lookAt(0, 0, 0);
+  // Lowered for a cinematic, candle-level view looking into the graveyard
+  camera.position.set(0, 1.5, 12);
+  camera.lookAt(0, 1.5, -2);
 
   return { renderer, scene, camera };
 }

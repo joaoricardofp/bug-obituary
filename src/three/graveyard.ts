@@ -32,10 +32,13 @@ export function buildGraveyard(
 
     // ── Angular placement ──────────────────────────────────────────────────
     // Distribute across a 126° fan centred on the camera's look-at point.
+    // We use the Golden Ratio to scatter the angles evenly and organically,
+    // breaking the linear queue that occurs when angle is tied directly to `i`.
     const totalAngle = Math.PI * 0.7;
-    const angleStep = sorted.length > 1 ? totalAngle / (sorted.length - 1) : 0;
-    const baseAngle = -totalAngle / 2 + i * angleStep;
-    const angleJitter = (pseudoRand(1) - 0.5) * (angleStep * 0.6);
+    const goldenRatio = 0.61803398875;
+    const angleFraction = (i * goldenRatio) % 1;
+    const baseAngle = -totalAngle / 2 + angleFraction * totalAngle;
+    const angleJitter = (pseudoRand(1) - 0.5) * 0.2;
     const finalAngle = baseAngle + angleJitter;
 
     // ── Depth placement ────────────────────────────────────────────────────
@@ -57,7 +60,7 @@ export function buildGraveyard(
     // ── Facing ────────────────────────────────────────────────────────────
     // Rotate stones to face roughly toward the camera position (0, y, 12)
     // with a small random offset so they don't all look perfectly aligned.
-    const angleToCamera = Math.atan2(-x, -z - 12);
+    const angleToCamera = Math.atan2(-x, 12 - z);
     stone.rotation.y = angleToCamera + (pseudoRand(5) - 0.5) * 0.4;
 
     // ── Non-uniform scale ─────────────────────────────────────────────────

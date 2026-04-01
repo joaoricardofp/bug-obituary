@@ -28,8 +28,8 @@ export function createControls(
   controls.minPolarAngle = Math.PI * 0.1; // ~18° — can't look straight up
   controls.maxPolarAngle = Math.PI * 0.72; // ~130° — can't go below ground
 
-  // Orbit around the centre of the graveyard, not the raw world origin.
-  controls.target.set(0, 0.5, 0);
+  // Orbit around the middle of the graveyard, slightly elevated for perspective
+  controls.target.set(0, 1.5, -2);
   controls.update();
 
   return controls;

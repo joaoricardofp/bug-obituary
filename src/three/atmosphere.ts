@@ -18,8 +18,8 @@ function createGround(): THREE.Mesh {
 // ---------------------------------------------------------------------------
 
 function createMoon(): THREE.Mesh {
-  const geo = new THREE.SphereGeometry(1.5, 16, 16);
-  const mat = new THREE.MeshToonMaterial({ color: new THREE.Color("#dde8f0") });
+  const geo = new THREE.SphereGeometry(3.5, 32, 32);
+  const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color("#ffaa44") });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.castShadow = false;
   mesh.position.set(-8, 12, -20);

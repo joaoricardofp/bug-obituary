@@ -13,6 +13,7 @@ import {
   getHoveredBugId,
   getScreenPosition,
 } from "@/three/raycaster";
+import { createInsects } from "@/three/insects";
 import GraveyardOverlay from "@/components/GraveyardOverlay";
 import ObituaryModal from "@/components/ObituaryModal";
 
@@ -64,6 +65,8 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
     const { candle1, candle2 } = createLighting(scene);
     createAtmosphere(scene);
 
+    const updateInsects = createInsects(scene, 45); // Gerar os vagalumes verdes
+
     const meshMap = buildGraveyard(bugs, scene);
     meshMapRef.current = meshMap;
 
@@ -81,6 +84,9 @@ export default function GraveyardScene({ bugs }: GraveyardSceneProps) {
       const t = timer.getElapsed();
       candle1.intensity = 2.0 + Math.sin(t * 3.7) * 0.3 + Math.sin(t * 11.3) * 0.15;
       candle2.intensity = 1.4 + Math.sin(t * 4.1) * 0.2 + Math.sin(t * 9.7) * 0.1;
+
+      // Animação caótica de voo dos insetos/vagalumes.
+      updateInsects(t);
 
       // Raycasting — detect hovered gravestone.
       const newHoveredId = getHoveredBugId(camera, meshMap);

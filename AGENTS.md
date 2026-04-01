@@ -47,9 +47,9 @@ cause of death, legacy, and an epitaph — and is displayed on a visual graveyar
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Framework | Next.js 14 — App Router | No Pages Router. Do not mix conventions. |
+| Framework | Next.js 16 — App Router | No Pages Router. Do not mix conventions. |
 | Language | TypeScript (strict mode) | No `any`. No implicit `any`. |
-| Styling | Tailwind CSS v3 | Utility-first. No CSS Modules unless scoping requires it. |
+| Styling | Tailwind CSS v4 | Utility-first. No CSS Modules unless scoping requires it. |
 | AI | Groq API — `llama-3.3-70b-versatile` | Free tier. Never switch model without updating this file. |
 | Persistence | Upstash Redis | Vercel KV was discontinued — use Upstash via `@upstash/redis`. Falls back to a local JSON file in development. |
 | 3D Scene | Three.js (r128) | Full immersive graveyard — gravestones, fog, lighting, hover via raycasting. |
